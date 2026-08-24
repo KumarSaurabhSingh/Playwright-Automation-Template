@@ -1,19 +1,19 @@
 /**
  * @file checkout.spec.ts
- * @description Full purchase journey on SauceDemo: login -> add to cart ->
- * cart -> shipping info -> overview -> order confirmation.
+ * @description Full purchase journey on SauceDemo: add to cart -> cart ->
+ * shipping info -> overview -> order confirmation.
+ *
+ * Login is handled once by the `setup` project (storage state), so this journey
+ * starts directly on the inventory page as an already-authenticated user.
  */
 import { test } from '../../../src/fixtures/baseFixture';
-import { validLoginData } from '../../../src/data/loginData';
 
 test.describe('Checkout', () => {
   test(
     'TC08 - Complete a purchase from login to confirmation',
     { tag: '@smoke' },
-    async ({ loginPage, productsPage, cartPage, checkoutPage }) => {
-      await loginPage.open();
-      await loginPage.login(validLoginData.username, validLoginData.password);
-      await loginPage.expectLoginSuccess();
+    async ({ productsPage, cartPage, checkoutPage }) => {
+      await productsPage.open();
 
       await productsPage.addToCart('Sauce Labs Backpack');
       await productsPage.openCart();

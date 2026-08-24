@@ -1,10 +1,18 @@
 # -----------------------------------------------------------------------------
 #  .github/workflows/ci.yml
-#  Continuous Integration pipeline. Runs the full test suite on every push and
-#  pull request, then uploads the Playwright HTML report and Allure results.
+#  Continuous Integration pipeline:
+#    1. quality-gate  — ESLint + TypeScript checks
+#    2. tests         — matrix over desktop browsers, mobile devices and API
+#                       (auth `setup` project runs automatically per project)
+#    3. notify        — consolidates run summaries and emails an HTML report
 #
-#  Secrets: add BASE_URL / credentials as GitHub Actions secrets and reference
-#  them with ${{ secrets.X }} instead of hardcoding them here.
+#  Required GitHub SECRETS for the email job:
+#    SMTP_HOST, SMTP_USER, SMTP_PASS, MAIL_TO
+#  Optional secrets: SMTP_PORT (default 587), MAIL_FROM (default SMTP_USER),
+#                    BASE_URL, USERNAME, PASSWORD (override demo app config)
+#  Optional variables: TEST_ENV (default staging)
+#
+#  If email secrets are absent the notify job skips sending and stays green.
 # -----------------------------------------------------------------------------
 name: Playwright CI
 
@@ -13,13 +21,68 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
-  workflow_dispatch: # allows manual runs from the Actions tab
+  workflow_dispatch:
+    inputs:
+      test_env:
+        description: Environment to run against
+        type: choice
+        required: false
+        default: staging
+        options: [dev, staging, prod]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  TEST_ENV: ${{ inputs.test_env || 'staging' }}
 
 jobs:
-  test:
-    name: Run Playwright tests
+  # ---------------------------------------------------------------------------
+  # 1. Quality gate — fail fast on lint/type errors before spinning up browsers.
+  # ---------------------------------------------------------------------------
+  quality-gate:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+  # ---------------------------------------------------------------------------
+  # 2. Test matrix — desktop + mobile + API, each shard uploads its own report.
+  # ---------------------------------------------------------------------------
+  tests:
+    name: Tests / ${{ matrix.project }}
+    needs: quality-gate
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [chromium, firefox, webkit, pixel-7, iphone-14, api]
+        include:
+          - { project: chromium, browser: chromium }
+          - { project: firefox, browser: firefox }
+          - { project: webkit, browser: webkit }
+          - { project: pixel-7, browser: chromium } # mobile Chrome = Chromium engine
+          - { project: iphone-14, browser: webkit } # mobile Safari = WebKit engine
+          - { project: api, browser: none } # no browser binary needed
 
     steps:
       - name: Checkout repository
@@ -34,24 +97,44 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+      - name: Install Playwright browser(s)
+        if: matrix.browser != 'none'
+        run: npx playwright install --with-deps ${{ matrix.browser }}
 
-      - name: Run tests against staging
+      - name: Run tests (${{ matrix.project }})
         env:
-          TEST_ENV: staging
           # URLs/credentials come from config/staging.env. For your own app,
-          # override them here with GitHub Actions secrets, e.g.:
+          # override them here with GitHub Actions secrets:
           #   BASE_URL: ${{ secrets.BASE_URL }}
           #   USERNAME: ${{ secrets.USERNAME }}
           #   PASSWORD: ${{ secrets.PASSWORD }}
-        run: npm run test:chromium
+          HEADLESS: 'true'
+        run: npx playwright test --project=${{ matrix.project }}
+
+      - name: Collect run summary
+        if: always()
+        run: |
+          mkdir -p summaries
+          if [ -f reports/test-summary.json ]; then
+            cp reports/test-summary.json "summaries/test-summary-${{ matrix.project }}.json"
+            echo "Summary collected for ${{ matrix.project }}"
+          else
+            echo "No summary produced for ${{ matrix.project }}" >&2
+          fi
+
+      - name: Upload run summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-summary-${{ matrix.project }}
+          path: summaries/
+          retention-days: 14
 
       - name: Upload Playwright HTML report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: html-report-${{ matrix.project }}
           path: reports/html-report/
           retention-days: 14
 
@@ -59,7 +142,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: traces-${{ matrix.project }}
           path: test-results/
           retention-days: 14
 
@@ -67,6 +150,47 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: allure-results
+          name: allure-results-${{ matrix.project }}
           path: allure-results/
           retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # 3. Notify — merge every project's summary into one email report.
+  #    Never fails the pipeline; email issues are logged as warnings.
+  # ---------------------------------------------------------------------------
+  notify:
+    name: Email report
+    needs: [quality-gate, tests]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download all run summaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: run-summary-*
+          merge-multiple: true
+          path: reports/summaries/
+
+      - name: Send email report
+        continue-on-error: true
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: node scripts/send-report-email.js

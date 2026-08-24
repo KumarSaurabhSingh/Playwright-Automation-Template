@@ -43,5 +43,13 @@ module.exports = tseslint.config(
     // ESLint config files are plain CommonJS by design.
     files: ['*.config.js'],
     rules: { '@typescript-eslint/no-require-imports': 'off' },
+  },
+  {
+    // scripts/ are standalone CommonJS Node utilities (email reporter, etc.).
+    files: ['scripts/**/*.js'],
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+      'no-console': 'off',
+    },
   }
 );

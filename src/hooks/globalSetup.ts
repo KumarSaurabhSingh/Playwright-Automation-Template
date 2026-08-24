@@ -14,7 +14,15 @@ import { logger } from '../utils/logger';
 export default async function globalSetup(_config: FullConfig): Promise<void> {
   logger.info('========== GLOBAL SETUP START ==========');
 
-  const folders = ['logs', 'reports', 'reports/html-report', 'test-results', 'allure-results'];
+  const folders = [
+    'logs',
+    'reports',
+    'reports/html-report',
+    'reports/summaries',
+    'test-results',
+    'allure-results',
+    '.auth',
+  ];
   for (const folder of folders) {
     fs.mkdirSync(path.resolve(__dirname, '../../', folder), { recursive: true });
   }

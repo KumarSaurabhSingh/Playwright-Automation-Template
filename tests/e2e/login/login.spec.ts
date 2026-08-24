@@ -8,6 +8,11 @@ import { test } from '../../../src/fixtures/baseFixture';
 import { invalidLoginScenarios, validLoginData } from '../../../src/data/loginData';
 import { logger } from '../../../src/utils/logger';
 
+// Login flows must start UNAUTHENTICATED. The project config injects the stored
+// session into every spec, so reset it here — otherwise opening the login screen
+// would redirect straight to /inventory.html.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 test.describe('Login', () => {
   test(
     'TC01 - Successful login with valid credentials',
